@@ -86,6 +86,14 @@ pub enum Before {
 pub enum ControlCall {
     /// One of [`SHARED`], as the block server parses it.
     Block(Call),
+    /// Existing delegate with an optional explicit card binding, atomically admitted by host.
+    DelegateCard {
+        card: u64,
+        block: String,
+        task: String,
+        wait: bool,
+        timeout: u64,
+    },
     Overview,
     ListAgents,
     ListShells,
@@ -116,6 +124,16 @@ pub enum ControlCall {
     /// Deletes a card and its comments.
     DeleteCard {
         card: u64,
+    },
+    /// Explicitly enrolls one confirmed card for host pickup in this workspace.
+    QueueCard {
+        card: u64,
+        workspace: String,
+    },
+    /// Withdraws enrollment before pickup, retaining the card.
+    CancelQueuedCard {
+        card: u64,
+        workspace: String,
     },
     /// Renames a board (`name`), or deletes it with its cards (`delete`): exactly one.
     EditBoard {
@@ -352,6 +370,9 @@ pub fn list() -> Value {
         .filter(|t| SHARED.iter().any(|name| t["name"] == *name))
         .map(|t| {
             let mut tool = for_it(t);
+            if tool["name"] == "delegate" {
+                tool["inputSchema"]["properties"]["card"] = json!({ "type": "integer", "description": "Bind the confirmed card to this native task atomically. Refused while enrolled for automatic pickup or already on another native task." });
+            }
             if [
                 "send_to_terminal",
                 "send_keys",
@@ -388,6 +409,24 @@ pub fn list() -> Value {
     opening["x"] = at("x");
     opening["y"] = at("y");
     let own = json!([
+        {
+            "name": "queue_card",
+            "description": "Enrolls a confirmed actionable card for durable automatic pickup by a free existing agent wired to its board in this workspace. Respects the card's assignee and agent kind. Does not create or start agents. Queued/running enrollment is idempotent; a blocked, failed or cancelled card needs this explicit call to resume after its blocker or scope is resolved. A completed card is never rerun. Put the agreed plan, boundaries and acceptance evidence in the card before queueing.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "card": { "type": "integer", "description": "The confirmed card's id." }, "workspace": workspace },
+                "required": ["card", "workspace"]
+            }
+        },
+        {
+            "name": "cancel_queued_card",
+            "description": "Withdraws or postpones a queued card before pickup, retaining its card and history. Refused after a worker starts: inspect its live task and ask the person about changes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "card": { "type": "integer" }, "workspace": workspace },
+                "required": ["card", "workspace"]
+            }
+        },
         {
             "name": "overview",
             "description": "Every workspace: its id, name, folder, whether it is shown or stopped; each block's \
@@ -696,6 +735,32 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
         _ => Err(format!("\"{key}\" is a list of strings")),
     };
     let call = match name {
+        "delegate" if !args["card"].is_null() => {
+            let Call::Delegate {
+                block,
+                task,
+                wait,
+                timeout,
+            } = tools::parse(name, args)?
+            else {
+                unreachable!("delegate parses to Delegate");
+            };
+            ControlCall::DelegateCard {
+                card: id("card", "a card's id")?.expect("card was present"),
+                block,
+                task,
+                wait,
+                timeout,
+            }
+        }
+        "queue_card" => ControlCall::QueueCard {
+            card: id("card", "a card's id")?.ok_or("queue_card needs \"card\"")?,
+            workspace: text("workspace")?,
+        },
+        "cancel_queued_card" => ControlCall::CancelQueuedCard {
+            card: id("card", "a card's id")?.ok_or("cancel_queued_card needs \"card\"")?,
+            workspace: text("workspace")?,
+        },
         "overview" => ControlCall::Overview,
         "list_agents" => ControlCall::ListAgents,
         "list_shells" => ControlCall::ListShells,
@@ -950,6 +1015,8 @@ pub fn title(name: &str) -> &'static str {
         "show" => "Showing",
         "add_block" => "Adding a block",
         "create_card" => "Adding a card",
+        "queue_card" => "Queueing a confirmed card",
+        "cancel_queued_card" => "Withdrawing a queued card",
         "edit_card" => "Editing a card",
         "move_card" => "Moving a card",
         "comment_card" => "Commenting on a card",
@@ -985,6 +1052,9 @@ pub fn title(name: &str) -> &'static str {
 /// A call's danger, decided from its tool: the model's arguments can't lower it.
 pub fn rule(call: &ControlCall) -> Rule {
     match call {
+        // The card's future worker is unknown. board_ask always asks for this enrollment;
+        // the API still uses its existing Control-token authorization for AskOwn tools.
+        ControlCall::QueueCard { .. } | ControlCall::DelegateCard { .. } => Rule::AskOwn,
         ControlCall::Block(Call::SendToTerminal { .. } | Call::SendKeys { .. }) => Rule::Ask,
         ControlCall::CloseBlock { .. }
         | ControlCall::EditBoard { delete: true, .. }
@@ -1022,6 +1092,43 @@ impl Rule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queue_tools_bind_one_card_to_a_workspace_and_preserve_approval_contract() {
+        let queued = parse("queue_card", &json!({"card": 12, "workspace": "w3"})).unwrap();
+        assert_eq!(
+            queued.call,
+            ControlCall::QueueCard {
+                card: 12,
+                workspace: "w3".into()
+            }
+        );
+        assert_eq!(rule(&queued.call), Rule::AskOwn);
+        assert!(parse("queue_card", &json!({"card": 12})).is_err());
+        assert!(parse("queue_card", &json!({"workspace": "w3"})).is_err());
+        assert_eq!(
+            parse(
+                "cancel_queued_card",
+                &json!({"card": "12", "workspace": "w3"})
+            )
+            .unwrap()
+            .call,
+            ControlCall::CancelQueuedCard {
+                card: 12,
+                workspace: "w3".into()
+            }
+        );
+        let listed = list();
+        for name in ["queue_card", "cancel_queued_card"] {
+            let tool = listed["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap();
+            assert_eq!(tool["inputSchema"]["properties"]["card"]["type"], "integer");
+        }
+    }
 
     #[test]
     fn reads_names_the_tools_that_only_read() {

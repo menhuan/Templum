@@ -287,6 +287,7 @@ impl Workspace {
         if !self.home_up() {
             self.space.opened = Some(crate::notes::now());
         }
+        self.look_at_automations(cx);
     }
 
     /// A first run's terminal: one, centered.
@@ -656,6 +657,11 @@ impl Workspace {
                 return;
             }
             self.make_space();
+        }
+        // Withdraw durable pending work before an id can be reused by a new workspace.
+        if let Err(why) = self.queue_workspace_deleted(id, cx) {
+            show_notification(window, cx, Notification::error(why.text));
+            return;
         }
         if at == self.active {
             let to = if at > 0 { at - 1 } else { 1 };

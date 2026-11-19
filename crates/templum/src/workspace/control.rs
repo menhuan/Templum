@@ -201,6 +201,54 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> (Outcome, Option<Target>) {
         let reply = match parsed.call {
+            ControlCall::DelegateCard {
+                card,
+                block,
+                task,
+                wait,
+                timeout,
+            } => {
+                if let Some(refused) = self.manual_card_task_problem(card) {
+                    return (Outcome::Now(refused), None);
+                }
+                if actor.agent()
+                    && let Some(refused) = self.too_many_tasks()
+                {
+                    return (Outcome::Now(refused), None);
+                }
+                let by = actor.by();
+                return self.on_task(&block, |ws, at| {
+                    let Some(pane) = ws.space_named(at.0).and_then(|s| s.terminal(at.1)) else {
+                        return Outcome::Now(Reply::err("The target is not a local terminal."));
+                    };
+                    if pane.handed.is_some() {
+                        return Outcome::Now(Reply::err("The worker already has a native task. End that task before handing it another card."));
+                    }
+                    if let Err(why) = pane.takes_handing(&block) { return Outcome::Now(why); }
+                    let terminal = pane.term.id().to_string();
+                    let claimed = ws.claim_card(&terminal, card, cx);
+                    if claimed.is_error { return Outcome::Now(claimed); }
+                    let outcome = ws.hand_task(actor.asker(), &by, at, &block, &task, wait, timeout, None, cx);
+                    if let Some(handed) = ws.pane_mut(&terminal).and_then(|p| p.handed.as_mut()).filter(|h| h.by == actor.asker()) {
+                        handed.card = Some(card);
+                    }
+                    outcome
+                });
+            }
+            ControlCall::QueueCard { card, workspace } => {
+                let target = self.card_shown(card);
+                return (
+                    Outcome::Now(self.queue_card(actor, card, &workspace, cx)),
+                    target,
+                );
+            }
+            ControlCall::CancelQueuedCard { card, workspace } => {
+                let target = self.card_shown(card);
+                return (
+                    Outcome::Now(self.cancel_queued_card(card, &workspace, cx)),
+                    target,
+                );
+            }
             ControlCall::Overview => Reply::ok(self.overview(cx)),
             ControlCall::ListAgents => Reply::ok(self.agent_list()),
             ControlCall::ListShells => Reply::ok(self.shell_list()),

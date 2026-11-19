@@ -366,6 +366,7 @@ fn home_s_task_and_role_are_cleaned_where_they_enter(cx: &mut TestAppContext) {
     let agent = |id: &str| AgentView {
         task: Some(TaskView {
             id: id.into(),
+            card: None,
             text: "a\x07".repeat(1 << 20),
             by: Some("b".repeat(500)),
             since: 1,

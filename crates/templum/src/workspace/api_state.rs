@@ -394,6 +394,7 @@ impl Workspace {
                 .filter(|handed| !handed.text.is_empty())
                 .map(|handed| TaskView {
                     id: format!("t{}", handed.id),
+                    card: handed.card,
                     text: handed.text.clone(),
                     by: if handed.by == templum_api::ASKER {
                         Some(handed.by.clone())
@@ -637,6 +638,17 @@ fn card_view(board: u64, column: u64, card: &crate::board::Card) -> CardView {
         column,
         title: card.title.clone(),
         description: card.description.clone(),
+        queue: card
+            .queue
+            .as_ref()
+            .map(|q| templum_api::model::CardQueueView {
+                workspace: q.workspace.clone(),
+                status: q.status.name().into(),
+                worker: q.worker.clone(),
+                task: q.task.map(|id| format!("t{id}")),
+                result: q.result.clone(),
+                waiting: q.waiting.clone(),
+            }),
         labels: card.labels.iter().map(|l| l.name().to_string()).collect(),
         priority: card.priority.map(|p| p.name().to_string()),
         assignee: card.assignee.as_ref().map(|a| match a {

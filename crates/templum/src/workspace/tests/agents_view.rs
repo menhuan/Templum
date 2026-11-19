@@ -1287,6 +1287,7 @@ fn home_agent(state: &str) -> templum_api::model::AgentView {
         role: Some("reviewer".into()),
         task: Some(templum_api::model::TaskView {
             id: "t3".into(),
+            card: None,
             text: "Ship it.".into(),
             by: Some("api".into()),
             since: 1,

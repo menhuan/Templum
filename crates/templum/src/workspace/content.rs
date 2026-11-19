@@ -10,7 +10,7 @@ use templum_mcp::{Reply, tools};
 use super::bus::{flat, target};
 use super::ops::{NewBlock, Place};
 use super::{BlockId, Body, Space, Workspace};
-use crate::board::{Assignee, Card};
+use crate::board::{Assignee, Card, QueueStatus};
 use crate::checklists;
 use crate::editor::{Content, Editor};
 
@@ -383,6 +383,25 @@ impl Workspace {
     }
 
     pub(super) fn claim_card(&mut self, from: &str, card: u64, cx: &mut Context<Self>) -> Reply {
+        self.take_card(from, card, false, cx)
+    }
+
+    pub(super) fn claim_queued_card(
+        &mut self,
+        from: &str,
+        card: u64,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        self.take_card(from, card, true, cx)
+    }
+
+    fn take_card(
+        &mut self,
+        from: &str,
+        card: u64,
+        queued_pickup: bool,
+        cx: &mut Context<Self>,
+    ) -> Reply {
         let (space, me) = self.caller_space(from);
         let board = match self.card_board(space, me, card) {
             Ok(b) => b,
@@ -392,6 +411,15 @@ impl Workspace {
         let Some(c) = self.boards.card(board, card) else {
             return Reply::err(format!("Card {card} is gone."));
         };
+        if !queued_pickup
+            && c.queue
+                .as_ref()
+                .is_some_and(|q| q.status == QueueStatus::Queued)
+        {
+            return Reply::err(format!(
+                "Card {card} is enrolled for automatic pickup. Ask the controller to cancel_queued_card before claiming it manually."
+            ));
+        }
         let mine = Assignee::Block(caller.0.clone());
         if c.assignee.as_ref() == Some(&mine) {
             return Reply::ok(format!("Card {card} is already yours."));

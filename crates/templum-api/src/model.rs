@@ -296,6 +296,9 @@ pub struct AgentView {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskView {
     pub id: String,
+    /// A card explicitly bound by manual delegation, absent on older hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<u64>,
     pub text: String,
     pub by: Option<String>,
     pub since: i64,
@@ -427,6 +430,19 @@ pub struct CardView {
     pub comments: Vec<CommentView>,
     /// Names and sizes, never paths.
     pub attachments: Vec<AttachmentView>,
+    /// Host pickup state; absent on manual cards and older hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<CardQueueView>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CardQueueView {
+    pub workspace: String,
+    pub status: String,
+    pub worker: Option<String>,
+    pub task: Option<String>,
+    pub result: Option<String>,
+    pub waiting: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

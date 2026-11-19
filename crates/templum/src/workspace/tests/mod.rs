@@ -776,6 +776,7 @@ mod blocks;
 mod board_tools;
 mod bus;
 mod card_draft;
+mod card_queue;
 mod checklists;
 mod config_reload;
 mod content;

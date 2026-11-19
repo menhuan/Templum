@@ -233,7 +233,8 @@ impl Workspace {
 
     /// Some rule is on, or has a run held: there is something to look at.
     fn automations_active(&self) -> bool {
-        self.automations.automations.iter().any(|a| a.on)
+        self.card_queue_active()
+            || self.automations.automations.iter().any(|a| a.on)
             || (self.automation_runs.values()).any(|run| run.held().is_some())
     }
 
@@ -266,6 +267,7 @@ impl Workspace {
     /// look fire their rules, the held runs are tried again. A rule that is off is looked at only
     /// for a run held by hand. False once there is nothing to look at.
     pub(super) fn look_automations(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.look_card_queue(cx);
         let now = SystemTime::now();
         let mut changed = false;
         // The queue never outlives a look.

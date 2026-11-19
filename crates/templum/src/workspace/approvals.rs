@@ -135,6 +135,23 @@ impl Workspace {
     fn board_ask(&self, call: &ControlCall) -> Option<BoardAsk> {
         let own = &self.templum_agent.conversation.own;
         match call {
+            ControlCall::QueueCard { card, workspace } => {
+                let (board, _) = self.boards.find_card(*card)?;
+                let found = self.boards.card(board, *card)?;
+                Some(BoardAsk {
+                    // Owning the card does not grant control of an unknown future worker.
+                    own: false,
+                    losing: None,
+                    said: format!(
+                        "Queue card {card} {:?} for automatic pickup",
+                        clean_title(&found.title)
+                    ),
+                    details: format!(
+                        "Workspace {workspace}. An existing eligible agent wired to its board will receive the card's confirmed work when free.\n\n{}",
+                        found.description
+                    ),
+                })
+            }
             ControlCall::DeleteCard { card } => {
                 let (board, column) = self.boards.find_card(*card)?;
                 let found = self.boards.board(board)?;
@@ -420,7 +437,8 @@ impl Workspace {
                 };
                 (format!("Press keys in {title:?}"), details)
             }
-            ControlCall::Block(Call::Delegate { task, .. }) => {
+            ControlCall::DelegateCard { task, .. }
+            | ControlCall::Block(Call::Delegate { task, .. }) => {
                 (format!("Hand {title:?} a task"), typed(task).0)
             }
             ControlCall::Block(Call::DeleteItem { block, item }) => {
@@ -651,6 +669,7 @@ fn visible(line: &str) -> String {
 fn called_block(call: &ControlCall) -> Option<&str> {
     match call {
         ControlCall::CloseBlock { block }
+        | ControlCall::DelegateCard { block, .. }
         | ControlCall::Block(
             Call::SendToTerminal { block, .. }
             | Call::SendKeys { block, .. }

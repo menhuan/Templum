@@ -11,6 +11,7 @@ pub(crate) mod automations;
 mod autostart;
 mod blocks;
 mod bus;
+mod card_queue;
 mod checklist_blocks;
 mod content;
 mod control;
@@ -165,6 +166,8 @@ pub(crate) struct Handed {
     /// Its id, said `t7`; counts from 1 each time Templum starts (`Workspace::next_task`); 0 for
     /// one made with `new`.
     pub id: u64,
+    /// An explicitly card-bound manual handoff; admission is atomic with queue enrollment.
+    pub card: Option<u64>,
     /// The terminal of the agent that handed it over.
     pub by: String,
     pub since: Instant,
@@ -204,6 +207,7 @@ impl Handed {
         let since = Instant::now();
         Self {
             id: 0,
+            card: None,
             by: by.to_string(),
             since,
             until: since + timeout,

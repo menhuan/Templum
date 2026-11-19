@@ -920,6 +920,18 @@ fn card_view(
             )
         })
         .child(div().text_size(px(13.0 * z)).child(title))
+        .when_some(card.queue.as_ref(), |el, queue| {
+            let status = queue.waiting.as_ref().map_or_else(
+                || format!("Pickup: {}", queue.status.name()),
+                |waiting| format!("Pickup: {} · {waiting}", queue.status.name()),
+            );
+            el.child(
+                div()
+                    .text_size(px(11.0 * z))
+                    .text_color(ui.title_dim)
+                    .child(status),
+            )
+        })
         .child(meta_row(ws, boards, n, card, z, cx))
         .drag_over::<CardDrag>(move |s, _, _, _| s.border_color(ui.accent))
         .on_drag(CardDrag { board, card: id }, move |_, _, _, cx| {

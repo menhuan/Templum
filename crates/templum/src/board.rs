@@ -94,6 +94,57 @@ pub(crate) struct Card {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub attachments: Vec<Attachment>,
+    /// Explicit host pickup enrollment; existing and manually handled cards have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<CardQueue>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct CardQueue {
+    pub workspace: String,
+    pub status: QueueStatus,
+    /// The confirmed enrollment's task body; later card edits never expand this authorization.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub context: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    /// A live task awaiting permission, an answer, or an explicit report. It still owns its worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
+    /// API enrollments cease to authorize pickup when this token goes away.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<u64>,
+    /// Folder bounds captured from a workspace-limited API token, rechecked at pickup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roots: Option<Vec<PathBuf>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum QueueStatus {
+    Queued,
+    Running,
+    Blocked,
+    Failed,
+    Done,
+    Cancelled,
+}
+
+impl QueueStatus {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Blocked => "blocked",
+            Self::Failed => "failed",
+            Self::Done => "done",
+            Self::Cancelled => "cancelled",
+        }
+    }
 }
 
 /// A file of a card, by its name in the card's folder. One whose name isn't a plain file name
@@ -226,6 +277,7 @@ impl Card {
             checklist: Vec::new(),
             comments: Vec::new(),
             attachments: Vec::new(),
+            queue: None,
         }
     }
 

@@ -555,7 +555,7 @@ impl Pane {
     /// `takes_typing`, for what another agent hands it (`delegate`, `reply`): only once a snapshot
     /// found its agent. One Templum typed there may never have started (its folder's trust
     /// declined), and before a snapshot found it, macOS can't tell its shell is in front.
-    fn takes_handing(&self, uid: &str) -> Result<(), Reply> {
+    pub(super) fn takes_handing(&self, uid: &str) -> Result<(), Reply> {
         if self.seen.agent.is_some() && self.seen.pid.is_none() {
             return Err(Reply::err(format!(
                 "{uid} is still starting: try again in a few seconds."
@@ -1313,6 +1313,10 @@ impl Workspace {
         text: &str,
         cx: &mut Context<Self>,
     ) -> Reply {
+        // Only an explicit worker reply reaches this path; screen/idle endings use end_turn.
+        if let Err(refused) = self.queue_reply(terminal, text, cx) {
+            return refused;
+        }
         let Some(handed) = self.pane_mut(terminal).and_then(|p| p.handed.take()) else {
             return Reply::err(
                 "You are on no task: reply answers the task an agent handed you; name a block to \
@@ -1563,6 +1567,11 @@ impl Workspace {
         reply: &Reply,
         cx: &mut Context<Self>,
     ) {
+        if handed.by.starts_with("card-queue-") {
+            // The durable card's state and person notification replace a notice to a terminal
+            // that does not exist. An implicit end is picked up by the host queue's next look.
+            return;
+        }
         let pane = self.pane(terminal);
         let (word, lead, level) = if reply.is_error {
             ("failed", FAILED_LEAD, NoticeLevel::Failed)

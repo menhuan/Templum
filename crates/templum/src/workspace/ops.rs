@@ -671,6 +671,16 @@ impl Workspace {
     /// `5  Fix login  [red, green]  priority high  assignee b7k2m "Codex"  checklist 2/5  2 comments`
     fn card_line(&self, c: &Card, viewer: Option<&Caller>, cx: &App) -> String {
         let mut line = format!("{}  {}", c.id, flat(&c.title));
+        if let Some(queue) = &c.queue {
+            line.push_str(&format!(
+                "  queue {} in {}",
+                queue.status.name(),
+                queue.workspace
+            ));
+            if let Some(waiting) = &queue.waiting {
+                line.push_str(&format!("  waiting {}", flat(waiting)));
+            }
+        }
         if !c.labels.is_empty() {
             let names: Vec<&str> = c.labels.iter().map(|l| l.name()).collect();
             line.push_str(&format!("  [{}]", names.join(", ")));
@@ -731,6 +741,9 @@ impl Workspace {
         );
         if !c.description.trim().is_empty() {
             text.push_str(&format!("\ndescription:\n{}", indent(&c.description)));
+        }
+        if let Some(result) = c.queue.as_ref().and_then(|queue| queue.result.as_ref()) {
+            text.push_str(&format!("\nqueue result:\n{}", indent(result)));
         }
         if !c.checklist.is_empty() {
             text.push_str("\nchecklist:");

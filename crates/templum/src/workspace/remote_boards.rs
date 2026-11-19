@@ -68,6 +68,9 @@ pub(super) fn card_of(view: &CardView) -> Card {
         id: view.id,
         title: clean_to(&view.title, CARD_TITLE_CHARS),
         description: clean_text(&view.description, DESCRIPTION_CHARS),
+        // Remote queue state is readable in the API view and its result comments. This mirror
+        // never enrolls or dispatches home's cards.
+        queue: None,
         labels,
         priority: view.priority.as_deref().and_then(Priority::named),
         assignee,
@@ -859,6 +862,7 @@ mod tests {
 
     fn hostile() -> CardView {
         CardView {
+            queue: None,
             id: 40,
             board: 12,
             column: 30,

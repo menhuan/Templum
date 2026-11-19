@@ -369,6 +369,8 @@ true`, alone). `show_board` (`block`, then `board` or `new`; control) shows a bo
 step of the kanban's Ctrl+Z; a limited token reaches only the boards its workspaces' kanbans show. `edit_comment`
 and `delete_comment` (`card`, `comment`, and `text`) act as you: edit a comment by `you`, delete any.
 
+**Automatic pickup.** On a host with `queue_card`, post `{"workspace":"w2","card":6}` to `/v1/tools/queue_card` after the person agrees to the work. Use the actual workspace and card IDs from your board. Templum can then give that card to an idle agent wired to its board, even after the API client disconnects. An ordinary card stays on the board until it is enrolled. To withdraw work before pickup, send the same identifiers to `/v1/tools/cancel_queued_card`. The card records the worker's outcome or blocker. See [planning from a desktop chat](../tools/desktop-mcp/README.md#plan-in-conversation).
+
 **Notes, checklists and ink.** `notes` holds the notes a note block shows, its `text` cut at 256 KiB (`cut` true
 then), and each note no note block shows that was last open in a workspace (closed since the version that added
 `edit_note`), its `text` empty and `workspace` that workspace's id; a workspace-limited token sees those of its

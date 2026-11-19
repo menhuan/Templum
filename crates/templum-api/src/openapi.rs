@@ -880,6 +880,7 @@ mod tests {
                     }),
                     task: Some(TaskView {
                         id: "t7".into(),
+                        card: None,
                         text: "Ship it.".into(),
                         by: Some("api".into()),
                         since: 6,
