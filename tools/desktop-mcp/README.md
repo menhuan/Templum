@@ -4,7 +4,7 @@ Discuss a plan in Codex or Claude Desktop and keep the plan in a Templum canvas 
 
 ## Connect your workspace
 
-1. Start Templum and open the workspace that should hold your plan. Start a worker such as Codex or Claude Code on the canvas if you want to delegate work to it.
+1. Start Templum and open the workspace that should hold your plan. Start a worker such as Codex or Claude Code on the canvas if you want to delegate work to it. Check that the CLI prompt has appeared and finish any first-run prompts there. Templum can show a newly opened block as idle while its shell is still starting.
 2. Under **Settings → API**, enable the API at its default loopback address. Create a **Control** token limited to that workspace. Copy the token when Templum displays it.
 3. Store the token outside the checkout. On macOS, run the following immediately after copying it. It writes the clipboard to a private file without printing its contents.
 
