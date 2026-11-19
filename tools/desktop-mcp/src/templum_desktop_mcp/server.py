@@ -19,12 +19,29 @@ from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 from .api import Api, BridgeError, read_token
 
 
-NATIVE = {"edit_note", "create_card", "edit_card", "move_card", "comment_card", "notify"}
+QUEUE_NATIVE = {"queue_card", "cancel_queued_card"}
+NATIVE = {"edit_note", "create_card", "edit_card", "move_card", "comment_card", "notify"} | QUEUE_NATIVE
 STRING = {"type": "string", "minLength": 1}
 NUMBER = {"type": "integer", "minimum": 0}
 TASK = {"type": "string", "pattern": r"^t[0-9]+$"}
 CURSOR = {"type": "string", "pattern": r"^[0-9a-f]{8}-[0-9]+$"}
 RECORD = re.compile(r"^\[templum-desktop-mcp run ([0-9a-f]{8}) task (t[0-9]+) block ([A-Za-z0-9_-]+) (completed|blocked|failed)\](?:\n|$)")
+QUEUE_UPGRADE = "Update and restart Templum with queue_card and cancel_queued_card support, then reconnect this desktop."
+
+PLAN_INSTRUCTIONS = """Within a planning conversation or established main-agent plan session (including a dedicated collaboration workspace), maintain one shared canvas plan: agreed decisions, open questions, postponed work and linked native card IDs. Natural agreement on executable scope authorizes capture and queueing; users need not mention Templum or ask to create tasks each turn. Keep tentative, unresolved, postponed and plan-only items in the note. Unrelated chats do not authorize writes.
+
+Locate the plan with list_workspaces; use the sole visible workspace without asking its name. Inspect before changing notes/cards. Reuse card IDs through retries/replanning; for new work, check existing cards and save any new ID in the plan before queueing. After conflicts or uncertain writes, inspect and reconcile instead of creating another card.
+
+Check queue_support before creating executable cards. An unsupported host leaves work pending in the plan; never substitute direct delegation. Queue only agreed scope, preserving required action permissions. Cancel queued work before postponing or changing scope; if running, retain the proposed change in the plan and report that it is still running.
+
+The host executes independently of desktop polling. On return, read card.queue outcomes/verification/blockers and update the linked plan. A queue receipt is not completion; worker completion is not user acceptance. For explicit direct handoffs, preserve task/block/cursor and retrieve the exact result. Answer permission questions in Templum."""
+
+NATIVE_GUIDANCE = {
+    "create_card": "In an active shared plan, reuse the linked card for the same work; save a new card ID in the plan before queue_card.",
+    "edit_card": "Keep the linked card's agreed outcome, scope and acceptance evidence current; cancel queued work before changing its scope. Preserve completed scope/results; new work after completion needs a linked follow-up card.",
+    "queue_card": "Use in an active shared plan for agreed executable work, preserving its linked card ID. The host runs it autonomously; read card.queue for the outcome.",
+    "cancel_queued_card": "Use before postponing or changing a queued plan item. A running task cannot be cancelled with this tool; retain the requested change in the plan.",
+}
 
 
 def tool(name, description, properties=None, required=()):
@@ -37,10 +54,14 @@ def tool(name, description, properties=None, required=()):
 
 CUSTOM = [
     tool("list_workspaces", "List the workspaces this API token can see."),
-    tool("inspect_workspace", "Read a workspace's blocks, wires, notes (text, rev, cut), cards and pending questions. Use this shared canvas as the plan; never overwrite a cut note.", {"workspace": STRING}, ["workspace"]),
-    tool("create_note", "Create a plan note in a workspace, optionally as a new tab of block. An empty canvas gets a new note block. Returns the note and its rev.", {"workspace": STRING, "block": STRING, "name": {"type": "string"}, "text": {"type": "string"}}, ["workspace", "text"]),
-    tool("delegate_task", "Hand work to an existing canvas agent without waiting for completion. Returns task, block and cursor: keep these to retrieve the actual answer from another desktop. Optional card preserves a dispatch receipt and asks a worker wired to that card's board to record its result. Acknowledgement is not completion.", {"block": STRING, "task": STRING, "card": NUMBER}, ["block", "task"]),
+    tool("inspect_workspace", "Read a workspace's blocks, wires, plan notes (text, rev, cut), cards including native queue status/results, pending questions and host queue_support. In a shared-plan discussion, inspect this before updating linked items or retrying a write; never overwrite a cut note.", {"workspace": STRING}, ["workspace"]),
+    tool("create_note", "Create the shared plan note only when the active Templum plan has none; inspect and reuse an existing note first. It holds agreed decisions, open questions, postponed work and linked card IDs. Optionally add a tab to a note block; an empty canvas gets a note block. Returns note and rev.", {"workspace": STRING, "block": STRING, "name": {"type": "string"}, "text": {"type": "string"}}, ["workspace", "text"]),
+    tool("delegate_task", "Explicit direct handoff to an existing canvas agent without waiting; use queue_card for agreed shared-plan work that the host should schedule. Returns task, block and cursor: keep these for get_task_result. Optional card preserves a dispatch receipt and asks a wired worker to record its result. Acknowledgement is not completion.", {"block": STRING, "task": STRING, "card": NUMBER}, ["block", "task"]),
     tool("get_task_result", "Recover the exact task's answer or blockers; pass its block, task id, cursor and optional card. timeout (0–45 seconds) only bounds this read, never fails the task. Cards keep explicit worker reports; API notices last at most one hour/256 notices and are lost on API restart. Idle alone is not completion.", {"block": STRING, "task": TASK, "cursor": CURSOR, "card": NUMBER, "timeout": {"type": "number", "minimum": 0, "maximum": 45}}, ["block", "task", "cursor"]),
+    # Keep these discoverable on older hosts so a queue request returns an actionable
+    # upgrade error. Compatible hosts supply the authoritative schemas below.
+    tool("queue_card", NATIVE_GUIDANCE["queue_card"], {"card": NUMBER, "workspace": STRING}, ["card", "workspace"]),
+    tool("cancel_queued_card", NATIVE_GUIDANCE["cancel_queued_card"], {"card": NUMBER, "workspace": STRING}, ["card", "workspace"]),
 ]
 
 
@@ -48,14 +69,24 @@ class Bridge:
     def __init__(self, api: Api):
         self.api = api
         self.schemas = {item.name: item for item in CUSTOM}
+        self.native = set()
 
     async def list_tools(self):
         registry = await self.api.request("GET", "/v1/tools")
+        self.schemas = {item.name: item for item in CUSTOM}
+        self.native = {item["name"] for item in registry}
         for item in registry:
             if item["name"] in NATIVE:
+                guidance = NATIVE_GUIDANCE.get(item["name"])
                 self.schemas[item["name"]] = Tool(
-                    name=item["name"], description=item["description"], input_schema=item["inputSchema"]
+                    name=item["name"],
+                    description=item["description"] + (f" {guidance}" if guidance else ""),
+                    input_schema=item["inputSchema"],
                 )
+        if not QUEUE_NATIVE <= self.native:
+            for name in QUEUE_NATIVE:
+                item = self.schemas[name]
+                self.schemas[name] = item.model_copy(update={"description": item.description + " Unavailable on this host. " + QUEUE_UPGRADE})
         return list(self.schemas.values())
 
     async def snapshot(self):
@@ -85,6 +116,7 @@ class Bridge:
         return found
 
     async def inspect_workspace(self, workspace):
+        await self.list_tools()
         snapshot = await self.snapshot()
         state = snapshot["data"]
         blocks = [b for b in state["blocks"] if b["workspace"] == workspace]
@@ -93,6 +125,7 @@ class Bridge:
         board_ids = {b.get("board") for b in blocks} - {None}
         return {
             "workspace": self.workspace(state, workspace),
+            "queue_support": {"supported": QUEUE_NATIVE <= self.native, "missing_tools": sorted(QUEUE_NATIVE - self.native), "upgrade": QUEUE_UPGRADE if not QUEUE_NATIVE <= self.native else None},
             "cursor": snapshot["id"],
             "blocks": blocks,
             "wires": [w for w in state["wires"] if w["a"] in block_ids and w["b"] in block_ids],
@@ -163,6 +196,15 @@ class Bridge:
             raise BridgeError("worker_busy", "This worker already has work or is waiting for its person. Inspect its current task; delegate_task starts only on a ready, idle worker.", worker=worker)
         if card is not None:
             source = await self.api.request("GET", f"/v1/cards/{card}")
+            queue = source.get("queue")
+            if queue is not None and queue["status"] in {"queued", "running", "blocked", "failed"}:
+                if queue["status"] == "queued":
+                    action = "Use cancel_queued_card before an explicit direct handoff."
+                elif queue["status"] == "running":
+                    action = "Wait for its result in card.queue; cancel_queued_card cannot stop a running worker."
+                else:
+                    action = "Use queue_card for recovery; the host checks whether the prior worker/task still owns this card."
+                raise BridgeError("card_in_queue", f"Card {card} is already {queue['status']} in the host queue. {action}", card=card, queue=queue)
             boards = {b["id"] for b in state["blocks"] if b["workspace"] == worker["workspace"] and b.get("board") == source["board"]}
             if not any({w["a"], w["b"]} & boards and block in {w["a"], w["b"]} for w in state["wires"]):
                 raise BridgeError("card_unreachable", "This worker must be wired to the card's kanban block to save a result. Connect them on the canvas, or omit card for retained API notices only.")
@@ -173,7 +215,13 @@ class Bridge:
                 "replacing tN with the task id in Templum's [from ..., task tN] header. A completed report describes your work; it does not claim the person's acceptance."
             )
         task += "\n\nWhen finished or blocked, use Templum notify to tell the person, then reply with the actual result or blocker."
-        receipt = await self.api.tool("delegate", {"block": block, "task": task, "wait": False})
+        dispatch = {"block": block, "task": task, "wait": False}
+        if card is not None:
+            registry = await self.api.request("GET", "/v1/tools")
+            native = next((item for item in registry if item["name"] == "delegate"), None)
+            if native is not None and "card" in native["inputSchema"]["properties"]:
+                dispatch["card"] = card
+        receipt = await self.api.tool("delegate", dispatch)
         match = re.search(r"\btask (t[0-9]+)\b", receipt["text"])
         if match is None:
             raise BridgeError("protocol", "Templum accepted the call but did not identify its task. Inspect the worker before retrying.", receipt=receipt)
@@ -237,6 +285,10 @@ class Bridge:
         return {**result, "status": "result_unavailable", "reason": "No exact result was recovered. Notices last one hour/256 entries and API restarts clear them; idle is not proof of completion. Check the task card or the worker's saved conversation."}
 
     async def call(self, name, arguments):
+        if name in QUEUE_NATIVE:
+            await self.list_tools()
+            if missing := QUEUE_NATIVE - self.native:
+                raise BridgeError("host_upgrade_required", "This Templum host does not support autonomous card queues. " + QUEUE_UPGRADE + " The requested queue change was not sent; keep the linked plan item pending.", missing_tools=sorted(missing))
         if name not in self.schemas:
             if name not in NATIVE:
                 raise BridgeError("unknown_tool", "This connector does not expose that tool.")
@@ -274,7 +326,7 @@ def make_server(bridge: Bridge):
     return Server(
         "templum-desktop",
         version="0.1.0",
-        instructions="Share plans through canvas notes. Inspect notes before edit_note and pass their rev; never overwrite cut text. Keep delegated task ids and cursors. Get the actual task result before reporting completion. Use a wired native card for results that must survive a restart or a day away. Worker reports are not user acceptance. Blockers are read-only here; answer them in Templum.",
+        instructions=PLAN_INSTRUCTIONS,
         on_list_tools=list_tools,
         on_call_tool=call_tool,
     )

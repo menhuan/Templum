@@ -13,7 +13,7 @@ from mcp import Client, MCPError
 from mcp.client.stdio import StdioServerParameters
 
 from templum_desktop_mcp.api import Api, BridgeError, local_url, read_token
-from templum_desktop_mcp.server import Bridge, make_server
+from templum_desktop_mcp.server import PLAN_INSTRUCTIONS, Bridge, make_server
 
 
 pytestmark = pytest.mark.anyio
@@ -66,8 +66,13 @@ class Templum:
             "comment_card": {"card": {"type": "integer"}, "text": {"type": "string"}},
             "claim_card": {"card": {"type": "integer"}},
             "notify": {"text": {"type": "string"}},
+            "queue_card": {"card": {"type": "integer"}, "workspace": {"type": "string"}},
+            "cancel_queued_card": {"card": {"type": "integer"}, "workspace": {"type": "string"}},
+            "delegate": {"block": {"type": "string"}, "task": {"type": "string"}, "wait": {"type": "boolean"}, "card": {"type": "integer"}},
+            "reply": {"text": {"type": "string"}},
             "send_to_terminal": {"block": {"type": "string"}, "text": {"type": "string"}},
         }
+        self.required = {name: ["card", "workspace"] for name in ("queue_card", "cancel_queued_card")}
         self.calls = []
         self.cursors = []
         self.notices = []
@@ -101,7 +106,7 @@ class Templum:
         if path == "/v1/state":
             return httpx.Response(200, json=self.state)
         if path == "/v1/tools":
-            return httpx.Response(200, json=[{"name": name, "description": name, "inputSchema": {"type": "object", "properties": properties, "required": []}} for name, properties in self.native.items()])
+            return httpx.Response(200, json=[{"name": name, "description": name, "inputSchema": {"type": "object", "properties": properties, "required": self.required.get(name, []), "additionalProperties": False}} for name, properties in self.native.items()])
         if path == "/v1/cards/40":
             return httpx.Response(200, json=self.state["cards"][0])
         if not path.startswith("/v1/tools/"):
@@ -156,7 +161,9 @@ async def test_native_schemas_and_no_terminal_or_approval_passthrough(connection
     tools = {tool.name: tool for tool in (await client.list_tools()).tools}
     assert tools["move_card"].input_schema["properties"] == templum.native["move_card"]
     assert tools["edit_card"].input_schema["properties"] == templum.native["edit_card"]
-    assert set(tools) == {"list_workspaces", "inspect_workspace", "create_note", "delegate_task", "get_task_result", "edit_note", "create_card", "edit_card", "move_card", "comment_card", "notify"}
+    assert tools["queue_card"].input_schema == {"type": "object", "properties": templum.native["queue_card"], "required": ["card", "workspace"], "additionalProperties": False}
+    assert tools["cancel_queued_card"].input_schema["properties"] == templum.native["cancel_queued_card"]
+    assert set(tools) == {"list_workspaces", "inspect_workspace", "create_note", "delegate_task", "get_task_result", "edit_note", "create_card", "edit_card", "move_card", "comment_card", "notify", "queue_card", "cancel_queued_card"}
     result = await client.call_tool("send_to_terminal", {"block": "worker", "text": "echo unintended"})
     assert result.is_error and value(result)["error"]["code"] == "unknown_tool"
     assert not templum.calls
@@ -164,6 +171,87 @@ async def test_native_schemas_and_no_terminal_or_approval_passthrough(connection
     result = await client.call_tool("edit_card", reassignment)
     assert not result.is_error and value(result) == {"text": "Done."}
     assert templum.calls == [("edit_card", reassignment)]
+
+
+async def test_plan_controller_instructions_reach_desktop_initialization(connection):
+    _templum, client = connection
+    assert client.instructions == PLAN_INSTRUCTIONS
+
+
+async def test_queue_uses_native_card_identity_without_delegating_or_creating_another_card(connection):
+    templum, client = connection
+    arguments = {"workspace": "w1", "card": 40}
+    for _ in range(2):
+        result = await client.call_tool("queue_card", arguments)
+        assert not result.is_error and value(result) == {"text": "Done."}
+    assert templum.calls == [("queue_card", arguments), ("queue_card", arguments)]
+    assert len(templum.state["cards"]) == 1
+    missing_workspace = await client.call_tool("queue_card", {"card": 40})
+    assert missing_workspace.is_error and value(missing_workspace)["error"]["code"] == "invalid"
+    assert len(templum.calls) == 2
+
+
+@pytest.mark.parametrize("missing", [("queue_card",), ("cancel_queued_card",), ("queue_card", "cancel_queued_card")])
+async def test_old_host_reports_upgrade_before_cards_are_created_and_never_dispatches(connection, missing):
+    templum, client = connection
+    for name in missing:
+        del templum.native[name]
+    tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+    assert "Unavailable on this host" in tools["queue_card"].description
+    snapshot = value(await client.call_tool("inspect_workspace", {"workspace": "w1"}))
+    assert snapshot["queue_support"]["supported"] is False
+    assert snapshot["queue_support"]["missing_tools"] == sorted(missing)
+    assert "restart Templum" in snapshot["queue_support"]["upgrade"]
+    for name in ("queue_card", "cancel_queued_card"):
+        result = await client.call_tool(name, {"workspace": "w1", "card": 40})
+        assert result.is_error and value(result)["error"]["code"] == "host_upgrade_required"
+        assert value(result)["error"]["missing_tools"] == sorted(missing)
+    assert not templum.calls
+    assert templum.state["notes"][0]["text"] == "Original"
+    assert len(templum.state["cards"]) == 1
+
+
+async def test_queue_refreshes_host_capabilities_after_restart_and_recovers_after_upgrade(connection):
+    templum, client = connection
+    await client.list_tools()
+    queue_schema = templum.native.pop("queue_card")
+    result = await client.call_tool("queue_card", {"workspace": "w1", "card": 40})
+    assert result.is_error and value(result)["error"]["code"] == "host_upgrade_required"
+    assert not templum.calls
+    templum.native["queue_card"] = queue_schema
+    result = await client.call_tool("queue_card", {"workspace": "w1", "card": 40})
+    assert not result.is_error
+    assert templum.calls == [("queue_card", {"workspace": "w1", "card": 40})]
+
+
+async def test_queue_cancel_refusal_keeps_running_state_and_does_not_edit_or_redispatch(connection):
+    templum, client = connection
+    queue = {"workspace": "w1", "status": "running", "worker": "worker", "task": "t7", "result": None, "waiting": "Approve migration"}
+    templum.state["cards"][0]["queue"] = queue
+    templum.refuse = ("refused", "Card 40 is already running; cancellation cannot stop its worker.", 422)
+    result = await client.call_tool("cancel_queued_card", {"workspace": "w1", "card": 40})
+    assert result.is_error and value(result)["error"]["code"] == "refused"
+    assert templum.calls == [("cancel_queued_card", {"workspace": "w1", "card": 40})]
+    snapshot = value(await client.call_tool("inspect_workspace", {"workspace": "w1"}))
+    assert snapshot["cards"][0]["queue"] == queue
+    assert snapshot["queue_support"]["supported"] is True
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "done", "blocked", "failed", "cancelled"])
+async def test_a_new_desktop_reads_native_queue_outcome_and_linked_plan_without_legacy_task_receipts(connection, status):
+    templum, _client = connection
+    templum.state["notes"][0]["text"] = "Agreed: fix login. Scope: authentication only. Evidence: regression test. Card #40. Open: migration choice."
+    queue = {"workspace": "w1", "status": status, "worker": "worker", "task": "t7", "result": "Authentication regression passed.", "waiting": None}
+    templum.state["cards"][0]["queue"] = queue
+    second_api = Api("http://127.0.0.1:7411", TOKEN, transport=httpx.MockTransport(templum.handle))
+    try:
+        async with Client(make_server(Bridge(second_api)), mode="legacy") as second:
+            snapshot = value(await second.call_tool("inspect_workspace", {"workspace": "w1"}))
+    finally:
+        await second_api.close()
+    assert snapshot["cards"][0]["id"] == 40 and snapshot["cards"][0]["queue"] == queue
+    assert snapshot["notes"][0]["text"] == templum.state["notes"][0]["text"]
+    assert not templum.calls
 
 
 async def test_scoped_workspace_snapshot_includes_revision_blockers_and_cursor(connection):
@@ -255,6 +343,59 @@ async def test_busy_worker_never_delegates_and_native_concurrent_change_is_hones
     result = value(await client.call_tool("delegate_task", {"block": "worker", "task": "New task", "card": 40}))
     assert result["status"] == "changed_existing_task" and result["card"] is None
     assert len(templum.calls) == 1 and not templum.state["cards"][0]["comments"]
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "blocked", "failed"])
+async def test_direct_handoff_refuses_a_card_already_owned_by_the_host_queue(connection, status):
+    templum, client = connection
+    queue = {"workspace": "w1", "status": status, "worker": "another-worker" if status != "queued" else None, "task": "t6" if status != "queued" else None, "result": None, "waiting": None}
+    templum.state["cards"][0]["queue"] = queue
+    result = await client.call_tool("delegate_task", {"block": "worker", "task": "Implement card 40", "card": 40})
+    assert result.is_error and value(result)["error"]["code"] == "card_in_queue"
+    assert value(result)["error"]["queue"] == queue
+    if status == "queued":
+        assert "Use cancel_queued_card" in value(result)["error"]["message"]
+    elif status == "running":
+        assert "Wait for its result" in value(result)["error"]["message"]
+    else:
+        assert "Use queue_card for recovery" in value(result)["error"]["message"]
+    assert not templum.calls and not templum.state["cards"][0]["comments"]
+    assert templum.state["blocks"][0]["agent"] == {"state": "idle", "task": None}
+
+
+async def test_direct_handoff_can_use_a_card_with_confirmed_queue_cancellation(connection):
+    templum, client = connection
+    templum.state["cards"][0]["queue"] = {"workspace": "w1", "status": "cancelled", "worker": None, "task": None, "result": None, "waiting": None}
+    result = value(await client.call_tool("delegate_task", {"block": "worker", "task": "Explicit direct handoff after withdrawal", "card": 40}))
+    assert result["status"] == "dispatched" and result["card"] == 40
+    assert [name for name, _ in templum.calls] == ["delegate", "comment_card"]
+
+
+@pytest.mark.parametrize("supports_card", [True, False])
+async def test_card_bound_direct_handoff_uses_native_atomic_card_argument_only_when_supported(connection, supports_card):
+    templum, client = connection
+    if not supports_card:
+        del templum.native["delegate"]["card"]
+    result = value(await client.call_tool("delegate_task", {"block": "worker", "task": "Explicit direct handoff", "card": 40}))
+    assert result["status"] == "dispatched" and result["card"] == 40
+    dispatch = templum.calls[0][1]
+    assert dispatch["block"] == "worker" and dispatch["wait"] is False
+    if supports_card:
+        assert dispatch["card"] == 40
+    else:
+        assert "card" not in dispatch
+
+
+async def test_native_card_ownership_refusal_is_propagated_without_retrying_a_plain_handoff(connection):
+    templum, client = connection
+    # The source card was not queued when read; native dispatch can still refuse a
+    # later ownership change atomically because the bridge forwards the card id.
+    templum.refuse = ("refused", "Card 40 was enrolled before dispatch; it is already in the host queue.", 422)
+    result = await client.call_tool("delegate_task", {"block": "worker", "task": "Explicit direct handoff", "card": 40})
+    assert result.is_error and value(result)["error"]["code"] == "refused"
+    assert [name for name, _ in templum.calls] == ["delegate"]
+    assert templum.calls[0][1]["card"] == 40
+    assert not templum.state["cards"][0]["comments"]
 
 
 async def test_blocker_and_bounded_read_do_not_claim_completion_or_failure(connection):
