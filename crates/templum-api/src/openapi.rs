@@ -161,6 +161,14 @@ fn schemas() -> Value {
             ("comments", array(r("CommentView"))),
             ("attachments", array(r("AttachmentView"))),
         ]),
+        "CardQueueView": view(&[
+            ("workspace", s()),
+            ("status", s()),
+            ("worker", maybe("string")),
+            ("task", maybe("string")),
+            ("result", maybe("string")),
+            ("waiting", maybe("string")),
+        ]),
         "NoteView": view(&[
             ("id", i()),
             ("name", s()),
@@ -549,6 +557,8 @@ fn schemas_with_views() -> Value {
         ("by", maybe("string")),
         ("since", i()),
     ]);
+    all["TaskView"]["properties"]["card"] = i();
+    all["CardView"]["properties"]["queue"] = r("CardQueueView");
     all["ScheduleView"] = view(&[
         ("id", s()),
         ("by", maybe("string")),
@@ -880,7 +890,7 @@ mod tests {
                     }),
                     task: Some(TaskView {
                         id: "t7".into(),
-                        card: None,
+                        card: Some(40),
                         text: "Ship it.".into(),
                         by: Some("api".into()),
                         since: 6,
@@ -942,7 +952,14 @@ mod tests {
                 }],
             })],
             cards: vec![Arc::new(CardView {
-                queue: None,
+                queue: Some(CardQueueView {
+                    workspace: "w3".into(),
+                    status: "running".into(),
+                    worker: Some("b7k2m".into()),
+                    task: Some("t7".into()),
+                    result: None,
+                    waiting: Some("Worker needs you: approve the request".into()),
+                }),
                 id: 40,
                 board: 3,
                 column: 7,
