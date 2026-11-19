@@ -754,7 +754,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Err(why) = self.keep_queue_end(board, card, status, result, cx)
-            && let Some(queue) = self.boards.card(board, card).and_then(|c| c.queue.clone()) {
+            && let Some(queue) = self.boards.card(board, card).and_then(|c| c.queue.clone())
+        {
             self.boards.edit_card(board, card, |c| {
                 let q = c.queue.as_mut().expect("enrolled");
                 q.status = QueueStatus::Failed;
