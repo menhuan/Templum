@@ -16,6 +16,8 @@ things a dashboard lists are JSON resources; everything that changes comes on on
 lines were not run against a running window of the dev build (the author's environment had no display), so try one
 first.
 
+To use an existing workspace from an external Codex or Claude Desktop chat, see [Desktop MCP setup](../tools/desktop-mcp/README.md).
+
 ## Quickstart
 
 1. **Turn it on:** Settings ▸ API ▸ *Turn on the API*. It listens on `http://127.0.0.1:7411` (this computer only).

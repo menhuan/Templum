@@ -1,0 +1,23 @@
+[project]
+name = "templum-desktop-mcp"
+version = "0.1.0"
+description = "Desktop MCP access to a local or SSH-forwarded Templum canvas"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx==0.28.1",
+    "jsonschema==4.26.0",
+    "mcp==2.3.0",
+]
+
+[project.scripts]
+templum-desktop-mcp = "templum_desktop_mcp.server:main"
+
+[dependency-groups]
+dev = ["pytest==8.4.2"]
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
