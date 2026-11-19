@@ -61,8 +61,10 @@ class Templum:
         self.native = {
             "edit_note": {"block": {"type": "string"}, "note": {"type": "integer"}, "name": {"type": "string"}, "text": {"type": "string"}, "rev": {"type": "integer"}},
             "create_card": {"board": {"type": "string"}, "title": {"type": "string"}},
+            "edit_card": {"card": {"type": "integer"}, "for": {"type": "string"}, "description": {"type": "string"}, "add_items": {"type": "string"}, "check": {"type": "array", "items": {"type": "integer"}}},
             "move_card": {"card": {"type": "integer"}, "column": {"type": "string"}},
             "comment_card": {"card": {"type": "integer"}, "text": {"type": "string"}},
+            "claim_card": {"card": {"type": "integer"}},
             "notify": {"text": {"type": "string"}},
             "send_to_terminal": {"block": {"type": "string"}, "text": {"type": "string"}},
         }
@@ -153,10 +155,15 @@ async def test_native_schemas_and_no_terminal_or_approval_passthrough(connection
     templum, client = connection
     tools = {tool.name: tool for tool in (await client.list_tools()).tools}
     assert tools["move_card"].input_schema["properties"] == templum.native["move_card"]
-    assert set(tools) == {"list_workspaces", "inspect_workspace", "create_note", "delegate_task", "get_task_result", "edit_note", "create_card", "move_card", "comment_card", "notify"}
+    assert tools["edit_card"].input_schema["properties"] == templum.native["edit_card"]
+    assert set(tools) == {"list_workspaces", "inspect_workspace", "create_note", "delegate_task", "get_task_result", "edit_note", "create_card", "edit_card", "move_card", "comment_card", "notify"}
     result = await client.call_tool("send_to_terminal", {"block": "worker", "text": "echo unintended"})
     assert result.is_error and value(result)["error"]["code"] == "unknown_tool"
     assert not templum.calls
+    reassignment = {"card": 40, "for": "replacement-worker", "description": "Agreed scope after discussion", "add_items": "Verify the replacement worker", "check": [3]}
+    result = await client.call_tool("edit_card", reassignment)
+    assert not result.is_error and value(result) == {"text": "Done."}
+    assert templum.calls == [("edit_card", reassignment)]
 
 
 async def test_scoped_workspace_snapshot_includes_revision_blockers_and_cursor(connection):

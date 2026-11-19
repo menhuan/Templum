@@ -19,7 +19,7 @@ from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 from .api import Api, BridgeError, read_token
 
 
-NATIVE = {"edit_note", "create_card", "move_card", "comment_card", "notify"}
+NATIVE = {"edit_note", "create_card", "edit_card", "move_card", "comment_card", "notify"}
 STRING = {"type": "string", "minLength": 1}
 NUMBER = {"type": "integer", "minimum": 0}
 TASK = {"type": "string", "pattern": r"^t[0-9]+$"}
