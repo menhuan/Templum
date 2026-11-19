@@ -27,13 +27,58 @@ fn setup(
     let (kanban, board, card) = board_with_a_card(handle, &ws, cx);
     ws.update(cx, |ws, cx| {
         assert!(ws.connect(worker, kanban, cx));
-        ws.space.terminal_mut(worker).unwrap().state = Some(super::super::AgentState::Idle);
         ws.boards.edit_card(board, card, |c| {
             c.description = "Implement the agreed change; verify its observable result.".into()
         });
     });
+    let (terminal, _) = me(&ws, cx, worker);
+    super::bus::has_server(handle, &ws, cx, &terminal, 77);
+    super::bus::event(handle, &ws, cx, &terminal, json!({"event": "started"}));
+    assert_ready_worker(&ws, cx, worker);
     let token = with_token(&ws, cx, Scope::Control, None);
     (data, handle, ws, worker, board, card, token)
+}
+
+fn assert_ready_worker(ws: &Entity<Workspace>, cx: &mut TestAppContext, worker: BlockId) {
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(worker).unwrap();
+        assert!(
+            pane.seen.pid.is_some(),
+            "the real worker process must be observed"
+        );
+        assert!(
+            !pane.shell_in_front(),
+            "the worker must run in front of its shell"
+        );
+        assert!(
+            ws.has_tools(pane.term.id()),
+            "the worker's native MCP must be ready"
+        );
+        assert_eq!(ws.doing(pane), super::super::agents_view::Doing::Idle);
+        assert!(pane.handed.is_none(), "the previous task must have ended");
+    });
+}
+
+/// A reply ends a task, not the worker's turn. Re-dispatch only after the native turn-end
+/// event; the existing fixture's recent-send reset represents the already elapsed typing gap.
+fn ready_for_next_task(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    worker: BlockId,
+) {
+    let (terminal, _) = me(ws, cx, worker);
+    super::bus::event(
+        handle,
+        ws,
+        cx,
+        &terminal,
+        json!({"event": "stopped", "message": "Previous worker turn ended."}),
+    );
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(worker).unwrap().sent = None
+    });
+    assert_ready_worker(ws, cx, worker);
 }
 
 fn queue(
@@ -158,9 +203,7 @@ fn busy_or_wrong_agent_stays_queued_then_only_one_card_owns_the_worker(cx: &mut 
         status(&ws, cx, board, card).waiting.is_none(),
         "busy is an ordinary wait"
     );
-    ws.update(cx, |ws, _| {
-        ws.space.terminal_mut(worker).unwrap().state = Some(super::super::AgentState::Idle)
-    });
+    ready_for_next_task(handle, &ws, cx, worker);
     pickup(&ws, cx);
     let states = [
         status(&ws, cx, board, card).status,
@@ -225,8 +268,8 @@ fn cancel_retains_card_and_explicit_blocked_can_resume_but_done_never_repeats(
         ws.boards.edit_card(board, card, |c| {
             c.description.push_str("\nApproved endpoint: /v2/search.")
         });
-        ws.space.terminal_mut(worker).unwrap().sent = None;
     });
+    ready_for_next_task(handle, &ws, cx, worker);
     queue(handle, &ws, cx, &token, card);
     pickup(&ws, cx);
     assert_eq!(status(&ws, cx, board, card).status, QueueStatus::Running);
@@ -278,9 +321,7 @@ fn implicit_idle_and_restart_never_turn_screen_text_into_done(cx: &mut TestAppCo
     pickup(&ws, cx);
     assert_eq!(status(&ws, cx, board, card).status, QueueStatus::Blocked);
     // A crash after a durable claim but before the delivery receipt cannot send it twice.
-    ws.update(cx, |ws, _| {
-        ws.space.terminal_mut(worker).unwrap().sent = None
-    });
+    ready_for_next_task(handle, &ws, cx, worker);
     queue(handle, &ws, cx, &token, card);
     pickup(&ws, cx);
     assert_eq!(status(&ws, cx, board, card).status, QueueStatus::Running);
@@ -300,24 +341,53 @@ fn implicit_idle_and_restart_never_turn_screen_text_into_done(cx: &mut TestAppCo
 #[gpui_kit::test]
 fn permission_and_quiet_waits_keep_task_and_notify_once_in_background(cx: &mut TestAppContext) {
     let (_data, handle, ws, worker, board, card, token) = setup(cx);
+    let (terminal, _) = me(&ws, cx, worker);
     cx.update(|cx| cx.set_app_identity("test.Templum", "Templum"));
     super::terminals::set_active(handle, false, cx);
     queue(handle, &ws, cx, &token, card);
     pickup(&ws, cx);
-    ws.update(cx, |ws, _| {
-        ws.space.terminal_mut(worker).unwrap().state = Some(super::super::AgentState::NeedsYou(
-            Some("Approve tool?".into()),
-        ))
-    });
+    // A permission belongs to a delivered task, not the paste still waiting for Enter. Observe
+    // the native Enter, then confirm Submitted before opening the agent's permission dialog.
+    super::delegate::entered(&ws, cx, worker);
+    super::bus::event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({"event": "submitted", "at_enter": true}),
+    );
+    super::bus::after(
+        cx,
+        crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
+    );
+    assert!(ws.read_with(cx, |ws, _| {
+        ws.space
+            .terminal(worker)
+            .unwrap()
+            .handed
+            .as_ref()
+            .unwrap()
+            .taken
+    }));
+    super::bus::event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({"event": "needs_you", "message": "Approve tool?"}),
+    );
     pickup(&ws, cx);
     pickup(&ws, cx);
     cx.run_until_parked();
     assert_eq!(status(&ws, cx, board, card).status, QueueStatus::Running);
+    let permission = status(&ws, cx, board, card);
     assert!(
-        status(&ws, cx, board, card)
+        permission
             .waiting
+            .as_deref()
             .unwrap()
-            .contains("Approve tool")
+            .contains("Approve tool"),
+        "unexpected permission wait: {permission:?}"
     );
     assert_eq!(
         cx.shown_system_notifications().len(),
@@ -327,6 +397,8 @@ fn permission_and_quiet_waits_keep_task_and_notify_once_in_background(cx: &mut T
     ws.update(cx, |ws, _| {
         let pane = ws.space.terminal_mut(worker).unwrap();
         pane.state = Some(super::super::AgentState::Idle);
+        pane.speaks = false;
+        pane.looks.heard();
         pane.handed.as_mut().unwrap().quiet = true;
     });
     pickup(&ws, cx);
@@ -343,7 +415,6 @@ fn permission_and_quiet_waits_keep_task_and_notify_once_in_background(cx: &mut T
             .unwrap()
             .contains("quiet")
     );
-    let (terminal, _) = me(&ws, cx, worker);
     assert!(
         !call(
             handle,
@@ -538,9 +609,7 @@ fn native_manual_card_handoff_and_queue_admission_are_mutually_exclusive(cx: &mu
         )
         .0
     );
-    ws.update(cx, |ws, _| {
-        ws.space.terminal_mut(worker).unwrap().sent = None
-    });
+    ready_for_next_task(handle, &ws, cx, worker);
     queue(handle, &ws, cx, &token, card);
     let refused = tool(
         handle,
@@ -623,6 +692,17 @@ fn worker_without_an_explicit_reply_path_stays_queued_with_a_visible_reason(
     cx: &mut TestAppContext,
 ) {
     let (_data, handle, ws, worker, board, card, token) = setup(cx);
+    super::bus::bus_note(
+        handle,
+        &ws,
+        cx,
+        77,
+        templum_mcp::bus::CLOSED,
+        serde_json::Value::Null,
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.has_tools(ws.space.terminal(worker).unwrap().term.id()))
+    });
     ws.update(cx, |ws, _| {
         ws.space.terminal_mut(worker).unwrap().seen.agent = Some("aider".into())
     });
