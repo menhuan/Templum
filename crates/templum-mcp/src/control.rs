@@ -1551,6 +1551,8 @@ mod tests {
             ),
             ("send_keys", json!({"block": "b7k2m", "keys": ["2"]})),
             ("create_card", json!({"board": "Sprint", "title": "Login"})),
+            ("queue_card", json!({"card": 4, "workspace": "w3"})),
+            ("cancel_queued_card", json!({"card": 4, "workspace": "w3"})),
             ("read_terminal", json!({"block": "b7k2m"})),
             ("list_cards", json!({"board": "Sprint"})),
             ("read_note", json!({"block": "n1"})),
