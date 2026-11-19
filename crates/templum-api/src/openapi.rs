@@ -942,6 +942,7 @@ mod tests {
                 }],
             })],
             cards: vec![Arc::new(CardView {
+                queue: None,
                 id: 40,
                 board: 3,
                 column: 7,
